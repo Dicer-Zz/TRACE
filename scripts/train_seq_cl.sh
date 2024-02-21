@@ -1,11 +1,11 @@
 #!bin/bash
 
-$cl_method="EWC"
+cl_method="EWC"
 port=$(shuf -i25000-30000 -n1)
-deepspeed --include=localhost:0,1,2,3,4,5,6,7 --master_port $port training/main.py  \
-    --data_path /mnt/data/user/zhang_yuansen/LLM-CL-Benchmark \
+deepspeed --include=localhost:0,1,2,3 --master_port $port training/main.py  \
+    --data_path /mnt/data1/private/zcwang/data/TRACE-Benchmark \
     --dataset_name C-STANCE,FOMC,MeetingBank,Py150,ScienceQA,NumGLUE-cm,NumGLUE-ds,20Minuten \
-    --model_name_or_path /mnt/data/user/zhang_yuansen/PTMs/llama-2-7b-chat \
+    --model_name_or_path /mnt/data2/Llama-2-7b-chat-hf \
     --per_device_train_batch_size 2 \
     --per_device_eval_batch_size 16 \
     --max_prompt_len 1024 \
@@ -21,5 +21,5 @@ deepspeed --include=localhost:0,1,2,3,4,5,6,7 --master_port $port training/main.
     --deepspeed \
     --print_loss \
     --CL_method $cl_method \
-    --output_dir /mnt/data/user/zhang_yuansen/outputs_LLM-CL/cl/$cl_method > /mnt/data/user/zhang_yuansen/outputs_LLM-CL/cl/$cl_method/train.log 2>&1 &
+    --output_dir /home/zcwang/TRACE/outputs/cl/$cl_method > /home/zcwang/TRACE/outputs/cl/$cl_method/train.log 2>&1 &
 
