@@ -19,7 +19,7 @@ def create_hf_model(model_class,
                     tokenizer,
                     ds_config=None,
                     disable_dropout=False,
-                    torch_dtype=torch.float32,
+                    torch_dtype=torch.bfloat16,
                     load_in_8bit=False,
                     ):
     model_config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)

@@ -1,10 +1,12 @@
 #!bin/bash
 port=$(shuf -i25000-30000 -n1)
 
-method_name="google/gemma-7b-it"
-deepspeed --include=localhost:4 --master_port $port inference/ICL.py  \
+# method_name="baichuan-inc/Baichuan2-7B-Chat"
+method_name="meta/Llama-2-7b-chat-hf"
+# method_name="google/gemma-7b-it"
+deepspeed --include=localhost:0 --master_port $port inference/ICL.py  \
     --data_path /home/zcwang/data/data/TRACE-Benchmark/LLM-CL-Benchmark_500 \
-    --dataset_name FOMC,C-STANCE,NumGLUE-cm,NumGLUE-ds,ScienceQA,MeetingBank,Py150,20Minuten \
+    --dataset_name FOMC,C-STANCE,NumGLUE-cm,NumGLUE-ds,ScienceQA,Py150,20Minuten \
     --model_name_or_path /home/zcwang/data/model/$method_name \
     --inference_batch 1 \
     --max_prompt_len 3584 \

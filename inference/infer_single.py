@@ -31,6 +31,7 @@ from transformers import (
     LlamaForCausalLM,
     LlamaTokenizer,
     AutoModelForCausalLM,
+    AutoModelForSeq2SeqLM
 )
 
 import deepspeed
@@ -220,7 +221,11 @@ def main():
         inference_model_path = os.path.join(args.inference_model_path, str(round))
         print_rank_0("Inference Model Path: " + inference_model_path, args.local_rank)
 
-        model = create_hf_model(AutoModelForCausalLM,
+        if "flan-t5" in args.model_name_or_path.lower() or "mt0" in args.model_name_or_path.lower():
+            model_class = AutoModelForSeq2SeqLM
+        else:
+            model_class = AutoModelForCausalLM
+        model = create_hf_model(model_class,
                                 args.model_name_or_path,
                                 tokenizer,
                                 ds_config=None,

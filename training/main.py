@@ -294,6 +294,8 @@ def main():
             elif name.find("lora_") != -1:
                 param.requires_grad = False
 
+        print_rank_0(model)
+
     if args.CL_method == "O-LoRAplus":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
 

@@ -1,6 +1,6 @@
 #!bin/bash
 port=$(shuf -i25000-30000 -n1)
-deepspeed --include=localhost:6,7 --master_port $port training/main.py \
+deepspeed --include=localhost:2,3,4,5,6,7 --master_port $port training/main.py \
    --data_path /home/zcwang/data/data/TRACE-Benchmark/LLM-CL-Benchmark_500 \
    --dataset_name C-STANCE,FOMC,Py150,ScienceQA,NumGLUE-cm,NumGLUE-ds,20Minuten \
    --model_name_or_path /home/zcwang/data/model/google/flan-t5-base \
@@ -10,7 +10,7 @@ deepspeed --include=localhost:6,7 --master_port $port training/main.py \
    --max_ans_len 512 \
    --learning_rate 1e-4 \
    --weight_decay 0. \
-   --num_train_epochs 5,3,7,5,3,5,5,7 \
+   --num_train_epochs 5,3,5,3,5,5,7 \
    --gradient_accumulation_steps 8 \
    --lr_scheduler_type cosine \
    --num_warmup_steps 0 \

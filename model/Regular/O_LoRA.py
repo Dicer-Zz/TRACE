@@ -1,3 +1,4 @@
+import re
 import os
 import time
 import math
@@ -78,53 +79,121 @@ class O_LoRA(CL_Base_Model):
                 # Correct gradient accumulation steps are handled withing the deepspeed engine's backward call.
                 self.model.step()
 
-        def split_string_by_first_num(s):  
-            for i, c in enumerate(s):  
-                if c.isdigit():  
-                    return s[:i], s[i + 1:]  
-            return None, None  
+        def split_string_by_first_num(s):
+            for i, c in enumerate(s):
+                if c.isdigit():
+                    return s[:i], s[i + 1:]
+            return None, None
 
         #### COMBINE lora with lora_new and INITIALIZE lora_new ####
-        flag = 0
-        layer_id = 0
         ## Different models may have different naming of modules.
         ## 'setattr' is not work. So We have to hard code the name temporarily.
         # layer_list = self.model.base_model.model.model.decoder.layers   # opt
-        layer_list = self.model.base_model.model.model.layers           # llama
-        state_dict = self.model.state_dict()
-        for k in state_dict:
-            # # e.g. opt-1.3b
-            # self.model.base_model.model.model.decoder.layers[layer_id].\
-            # self_attn.v_proj.lora_A.default.weight.data\
-            # = state_dict[k]
-            if "v_proj.lora_A" in k:
-                k_ = k.replace("v_proj.lora_A", "v_proj.loranew_A")
-                assert k_ in state_dict
-                state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0) # [r_sum + r, dim]
-                layer_list[layer_id].self_attn.v_proj.lora_A.default.weight.data = state_dict[k]
-                flag += 1
-            elif "q_proj.lora_A" in k:   
-                k_ = k.replace("q_proj.lora_A", "q_proj.loranew_A")
-                assert k_ in state_dict
-                state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0) # [r_sum + r, dim]
-                layer_list[layer_id].self_attn.q_proj.lora_A.default.weight.data = state_dict[k]
-                flag += 1
-            elif "v_proj.lora_B" in k:
-                k_ = k.replace("v_proj.lora_B", "v_proj.loranew_B")
-                assert k_ in state_dict
-                state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1) # [dim, r_sum + r]
-                layer_list[layer_id].self_attn.v_proj.lora_B.default.weight.data = state_dict[k]
-                flag += 1
-            elif "q_proj.lora_B" in k:
-                k_ = k.replace("q_proj.lora_B", "q_proj.loranew_B")
-                assert k_ in state_dict
-                state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1) # [dim, r_sum + r]
-                layer_list[layer_id].self_attn.q_proj.lora_B.default.weight.data = state_dict[k]
-                flag += 1
 
-            if flag == 4:
-                layer_id += 1
-                flag = 0
+
+        # layer_list = self.model.base_model.model.model.layers           # llama
+        if hasattr(self.model.base_model.model, "model"): # llama
+            layer_list = self.model.base_model.model.model.layers
+            model_type = "decoder-only"
+        elif hasattr(self.model.base_model.model, "encoder") and hasattr(self.model.base_model.model, "decoder"):
+            encoder_block_list = self.model.base_model.model.encoder.block
+            decoder_block_list = self.model.base_model.model.decoder.block
+            model_type = "encoder-decoder"
+
+        if model_type == "decoder-only":
+            # For Llama
+            flag = 0
+            layer_id = 0
+            print_rank_0("We are training a decoder-only model")
+            state_dict = self.model.state_dict()
+            for k in state_dict:
+                if "v_proj.lora_A" in k:
+                    k_ = k.replace("v_proj.lora_A", "v_proj.loranew_A")
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0) # [r_sum + r, dim]
+                    layer_list[layer_id].self_attn.v_proj.lora_A.default.weight.data = state_dict[k]
+                    flag += 1
+                elif "q_proj.lora_A" in k:
+                    k_ = k.replace("q_proj.lora_A", "q_proj.loranew_A")
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0) # [r_sum + r, dim]
+                    layer_list[layer_id].self_attn.q_proj.lora_A.default.weight.data = state_dict[k]
+                    flag += 1
+                elif "v_proj.lora_B" in k:
+                    k_ = k.replace("v_proj.lora_B", "v_proj.loranew_B")
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1) # [dim, r_sum + r]
+                    layer_list[layer_id].self_attn.v_proj.lora_B.default.weight.data = state_dict[k]
+                    flag += 1
+                elif "q_proj.lora_B" in k:
+                    k_ = k.replace("q_proj.lora_B", "q_proj.loranew_B")
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1) # [dim, r_sum + r]
+                    layer_list[layer_id].self_attn.q_proj.lora_B.default.weight.data = state_dict[k]
+                    flag += 1
+
+                if flag == 4:
+                    layer_id += 1
+                    flag = 0
+
+        elif model_type == "encoder-decoder":
+            # For t5, mt0
+            print_rank_0("We are training a encoder-decoder model")
+            state_dict = self.model.state_dict()
+            for k in state_dict:
+                if "v.lora_A" in k:
+                    block_num, layer_num = extract_numbers(k)
+                    k_ = k.replace("v.lora_A", "v.loranew_A")
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0)
+                    if "encoder" in k:
+                        encoder_block_list[block_num].layer[0].SelfAttention.v.lora_A.default.weight.data = state_dict[k]
+                    elif "decoder" in k:
+                        # print_rank_0(k)
+                        # judge for self attention or cross attention
+                        if layer_num == 0:
+                            decoder_block_list[block_num].layer[0].SelfAttention.v.lora_A.default.weight.data = state_dict[k]
+                        elif layer_num == 1:
+                            decoder_block_list[block_num].layer[1].EncDecAttention.v.lora_A.default.weight.data = state_dict[k]
+                if "q.lora_A" in k:
+                    k_ = k.replace("q.lora_A", "q.loranew_A")
+                    block_num, layer_num = extract_numbers(k)
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=0)
+                    if "encoder" in k:
+                        encoder_block_list[block_num].layer[0].SelfAttention.q.lora_A.default.weight.data = state_dict[k]
+                    elif "decoder" in k:
+                        # print_rank_0(k)
+                        if layer_num == 0:
+                            decoder_block_list[block_num].layer[0].SelfAttention.q.lora_A.default.weight.data = state_dict[k]
+                        elif layer_num == 1:
+                            decoder_block_list[block_num].layer[1].EncDecAttention.q.lora_A.default.weight.data = state_dict[k]
+                if "v.lora_B" in k:
+                    k_ = k.replace("v.lora_B", "v.loranew_B")
+                    block_num, layer_num = extract_numbers(k)
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1)
+                    if "encoder" in k:
+                        encoder_block_list[block_num].layer[0].SelfAttention.v.lora_B.default.weight.data = state_dict[k]
+                    elif "decoder" in k:
+                        # print_rank_0(k)
+                        if layer_num == 0:
+                            decoder_block_list[block_num].layer[0].SelfAttention.v.lora_B.default.weight.data = state_dict[k]
+                        elif layer_num == 1:
+                            decoder_block_list[block_num].layer[1].EncDecAttention.v.lora_B.default.weight.data = state_dict[k]
+                if "q.lora_B" in k:
+                    k_ = k.replace("q.lora_B", "q.loranew_B")
+                    block_num, layer_num = extract_numbers(k)
+                    assert k_ in state_dict
+                    state_dict[k] = torch.cat((state_dict[k], state_dict[k_]), dim=1)
+                    if "encoder" in k:
+                        encoder_block_list[block_num].layer[0].SelfAttention.q.lora_B.default.weight.data = state_dict[k]
+                    elif "decoder" in k:
+                        # print_rank_0(k)
+                        if layer_num == 0:
+                            decoder_block_list[block_num].layer[0].SelfAttention.q.lora_B.default.weight.data = state_dict[k]
+                        elif layer_num == 1:
+                            decoder_block_list[block_num].layer[1].EncDecAttention.q.lora_B.default.weight.data = state_dict[k]
 
         for k in state_dict:
             if "loranew_A" in k:
@@ -155,3 +224,14 @@ class O_LoRA(CL_Base_Model):
 
     def save_model(self, i_task):
         pass
+
+
+def extract_numbers(pattern):
+    match = re.search(r'block\.(\d+)\.layer\.(\d+)', pattern)
+    if match:
+        # 如果找到匹配项，提取并返回数字
+        block_number = match.group(1)
+        layer_number = match.group(2)
+        return int(block_number), int(layer_number)
+    else:
+        raise ValueError("No match found")
