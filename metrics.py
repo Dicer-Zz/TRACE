@@ -139,6 +139,8 @@ def caculate_fuzz(results, data):
 ## SARI
 ########################
 def caculate_sari(inputs, results, data):
-    sari = load_metric("sari")
+    # sari = load_metric("sari")
+    import evaluate
+    sari = evaluate.load("./evaluations/sari")
     translation_result = sari.compute(sources=inputs, predictions=results, references=[[label] for label in data]),
     return translation_result

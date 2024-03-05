@@ -1,18 +1,20 @@
 #!bin/bash
 port=$(shuf -i25000-30000 -n1)
-deepspeed --include=localhost:0 --master_port $port inference/ICL.py  \
-    --data_path /mnt/data/user/zhang_yuansen/LLM-CL_Benchmark \
+
+method_name="google/gemma-7b-it"
+deepspeed --include=localhost:4 --master_port $port inference/ICL.py  \
+    --data_path /home/zcwang/data/data/TRACE-Benchmark/LLM-CL-Benchmark_500 \
     --dataset_name FOMC,C-STANCE,NumGLUE-cm,NumGLUE-ds,ScienceQA,MeetingBank,Py150,20Minuten \
-    --model_name_or_path /mnt/data/user/zhang_yuansen/PTMs/llama-2-7b-chat \
-    --inference_batch 4 \
+    --model_name_or_path /home/zcwang/data/model/$method_name \
+    --inference_batch 1 \
     --max_prompt_len 3584 \
     --max_ans_len 512 \
     --seed 1234 \
     --deepspeed \
     --demonstrations_num 6 \
-    --inference_output_path /mnt/data/user/zhang_yuansen/outputs_LLM-CL/ICL > /mnt/data/user/zhang_yuansen/outputs_LLM-CL/ICL/infer.log 2>&1 &
+    --inference_output_path /home/zcwang/TRACE/outputs/ICL/$method_name > /home/zcwang/TRACE/outputs/ICL/$method_name/infer.log 2>&1 &
 
-
+exit 0
 
 
 # for slurm, single gpu

@@ -19,6 +19,8 @@ def create_hf_model(model_class,
                     tokenizer,
                     ds_config=None,
                     disable_dropout=False,
+                    torch_dtype=torch.float32,
+                    load_in_8bit=False,
                     ):
     model_config = AutoConfig.from_pretrained(model_name_or_path, trust_remote_code=True)
 
@@ -35,7 +37,10 @@ def create_hf_model(model_class,
         model_name_or_path,
         from_tf=bool(".ckpt" in model_name_or_path),
         config=model_config,
-        trust_remote_code=True)
+        trust_remote_code=True,
+        torch_dtype=torch_dtype,
+        load_in_8bit=load_in_8bit,
+    )
 
     # llama use eos_token_id but not end_token_id
     model.config.end_token_id = tokenizer.eos_token_id

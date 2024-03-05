@@ -301,6 +301,17 @@ class LoraModel(torch.nn.Module):
     def disable_adapter_layers(self):
         self._set_adapter_layers(enabled=False)
 
+    # modified
+    def enable_new_adapters(self):
+        for module in self.model.modules():
+            if isinstance(module, LoraLayer):
+                module.enable_new_adapters()
+
+    def disable_new_adapters(self):
+        for module in self.model.modules():
+            if isinstance(module, LoraLayer):
+                module.disable_new_adapters()
+
     def set_adapter(self, adapter_name):
         for module in self.model.modules():
             if isinstance(module, LoraLayer):
@@ -542,6 +553,7 @@ class Linear(nn.Linear, LoraLayer):
 
         nn.Linear.reset_parameters(self)
         self.update_layer(adapter_name, r, lora_alpha, lora_dropout, init_lora_weights, r_sum) # modified
+        self.disable_new_adapters = False # modified
         self.active_adapter = adapter_name
 
     def merge(self):
@@ -576,6 +588,13 @@ class Linear(nn.Linear, LoraLayer):
             )
             self.merged = False
 
+    # modified
+    def disable_new_adapters(self):
+        self.disable_new_adapters = True
+
+    def enable_new_adapters(self):
+        self.disable_new_adapters = False
+
     def forward(self, x: torch.Tensor):
         previous_dtype = x.dtype
 
@@ -599,13 +618,14 @@ class Linear(nn.Linear, LoraLayer):
             )
 
             # modified
-            result += (
-                self.loranew_B[self.active_adapter](
-                    self.loranew_A[self.active_adapter](x)
+            if not self.disable_new_adapters:
+                result += (
+                    self.loranew_B[self.active_adapter](
+                        self.loranew_A[self.active_adapter](x)
+                    )
+                    * self.scaling[self.active_adapter]
                 )
-                * self.scaling[self.active_adapter] 
-            )
-            
+
         else:
             result = F.linear(x, transpose(self.weight, self.fan_in_fan_out), bias=self.bias)
 

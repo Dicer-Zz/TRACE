@@ -6,19 +6,21 @@ import torch.nn as nn
 from tqdm import tqdm
 from model.base_model import CL_Base_Model
 from utils.utils import print_rank_0, to_device, get_all_reduce_mean
+from utils.my_peft.tuners.lora import LoraModel
 
 
-class O_LoRA(CL_Base_Model):
+class O_LoRAplus(CL_Base_Model):
     def __init__(self,
-                 model, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args,
-                 lamda_1 = 0.5, lamda_2 = 0
+                 model: LoraModel, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args,
+                 lambda_1 = 0.5, lambda_2 = 0, lambda_3 = 0,
                  ):
         super().__init__(model, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args)
         '''
         orthological to previous adapters
         '''
-        self.lamda_1 = lamda_1
-        self.lamda_2 = lamda_2
+        self.lambda_1 = lambda_1
+        self.lambda_2 = lambda_2
+        self.lambda_3 = lambda_3
         
         if self.args.local_rank == -1:
             self.device = torch.device("cuda")
@@ -29,7 +31,7 @@ class O_LoRA(CL_Base_Model):
 
     def train_one_task(self, task, i_task, epochs):
         # if i_task > 0:
-        #     self.lamda_2 = 0.1
+        #     self.lambda_2 = 0.1
         
         num_task = len(self.train_task_list)
         train_dataloader = self.train_task_list[task]
@@ -64,8 +66,8 @@ class O_LoRA(CL_Base_Model):
                     if "loranew_" in name:
                         l2_loss += torch.norm(param, p=2)
 
-                print_rank_0(f"orthogonal_loss: {orthogonal_loss.item()}; l2_loss: {l2_loss.item()}; accuracy_loss: {loss.item()}; λ1: {self.lamda_1}; λ2: {self.lamda_2}", self.args.global_rank)
-                loss = loss + orthogonal_loss * self.lamda_1 + l2_loss * self.lamda_2
+                print_rank_0(f"orthogonal_loss: {orthogonal_loss.item()}; l2_loss: {l2_loss.item()}; accuracy_loss: {loss.item()}; λ1: {self.lambda_1}; λ2: {self.lambda_2}", self.args.global_rank)
+                loss = loss + orthogonal_loss * self.lambda_1 + l2_loss * self.lambda_2
                 ######################################################################
                 # Update the description to include current step and loss, if needed
                 if self.args.global_rank == 0:
@@ -78,11 +80,11 @@ class O_LoRA(CL_Base_Model):
                 # Correct gradient accumulation steps are handled withing the deepspeed engine's backward call.
                 self.model.step()
 
-        def split_string_by_first_num(s):  
-            for i, c in enumerate(s):  
-                if c.isdigit():  
-                    return s[:i], s[i + 1:]  
-            return None, None  
+        def split_string_by_first_num(s):
+            for i, c in enumerate(s):
+                if c.isdigit():
+                    return s[:i], s[i + 1:]
+            return None, None
 
         #### COMBINE lora with lora_new and INITIALIZE lora_new ####
         flag = 0
@@ -133,12 +135,15 @@ class O_LoRA(CL_Base_Model):
                 nn.init.zeros_(state_dict[k])
         self.model.load_state_dict(state_dict)
 
-        #### RESET ####
-        for name, param in self.model.named_parameters():
-            if name.find("loranew_") != -1:
-                param.requires_grad = True
-            elif name.find("lora_") != -1:
-                param.requires_grad = False
+        self.freeze("lora_")
+        self.unfreeze("loranew_")
+
+        # #### RESET ####
+        # for name, param in self.model.named_parameters():
+        #     if name.find("loranew_") != -1:
+        #         param.requires_grad = True
+        #     elif name.find("lora_") != -1:
+        #         param.requires_grad = False
 
         #### SAVE ####
         if self.args.output_dir is not None:
@@ -155,3 +160,14 @@ class O_LoRA(CL_Base_Model):
 
     def save_model(self, i_task):
         pass
+
+    def _change_grad(self, pattern, mode):
+        for name, param in self.model.named_parameters():
+            if name.find(pattern) != -1:
+                param.requires_grad = mode
+
+    def freeze(self, pattern):
+        self._change_grad(pattern, False)
+
+    def unfreeze(self, pattern):
+        self._change_grad(pattern, True)

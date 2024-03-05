@@ -20,6 +20,8 @@ from transformers import (
     LlamaForCausalLM,
     LlamaTokenizer,
     AutoModelForCausalLM,
+    # AutoModelForConditionalGeneration,
+    AutoModelForSeq2SeqLM,
     SchedulerType,
     default_data_collator,
     get_scheduler,
@@ -174,12 +176,23 @@ def parse_args():
     parser.add_argument('--offload',
                         action='store_true',
                         help='Enable ZeRO Offload techniques.')
+    parser.add_argument('--half',
+                        action='store_true',
+                        help='Enable half precision training.')
+    parser.add_argument('--load_in_8bit',
+                        action='store_true',
+                        help='Load model in 8bit precision.')
     parser.add_argument(
         '--zero_stage',
         type=int,
         default=0,
         help='ZeRO optimization stage for Actor model (and clones).')
-    
+
+    ## lora settings
+    parser.add_argument('--target_modules',
+                        type=list_of_strings,
+                        default=None,
+                        help='Target modules for LoRA conversion.')
     ## Tensorboard logging
     parser.add_argument('--enable_tensorboard',
                         action='store_true',
@@ -238,11 +251,19 @@ def main():
     assert tokenizer.padding_side == 'left'
     assert tokenizer.truncation_side == "left"
 
-    model = create_hf_model(AutoModelForCausalLM,
+    precision = torch.bfloat16 if args.half else None
+
+    if "flan-t5" in args.model_name_or_path.lower() or "mt0" in args.model_name_or_path.lower():
+        model_class = AutoModelForSeq2SeqLM
+    else:
+        model_class = AutoModelForCausalLM
+    model = create_hf_model(model_class,
                             args.model_name_or_path,
                             tokenizer,
                             ds_config=ds_config,
-                            disable_dropout=args.disable_dropout
+                            disable_dropout=args.disable_dropout,
+                            torch_dtype=precision,
+                            load_in_8bit=args.load_in_8bit
                             )
     
     # some CL methods can be realized by peft
@@ -256,6 +277,7 @@ def main():
             num_virtual_tokens=300,
             prompt_tuning_init_text=initial_prompt,
             tokenizer_name_or_path=args.model_name_or_path,
+            target_modules=args.target_modules
         )
         model = get_peft_model(model, peft_config)
 
@@ -263,7 +285,20 @@ def main():
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
 
         peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
+            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1, target_modules=args.target_modules
+        )
+        model = get_peft_model(model, peft_config)
+        for name, param in model.named_parameters():
+            if name.find("loranew_") != -1:
+                param.requires_grad = True
+            elif name.find("lora_") != -1:
+                param.requires_grad = False
+
+    if args.CL_method == "O-LoRAplus":
+        from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
+
+        peft_config = LoraConfig(
+            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1, target_modules=args.target_modules
         )
         model = get_peft_model(model, peft_config)
         for name, param in model.named_parameters():
@@ -276,7 +311,7 @@ def main():
         from peft import get_peft_model, LoraConfig, TaskType
         
         peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
+            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1, target_modules=args.target_modules
         )
         model = get_peft_model(model, peft_config)
         for name, param in model.named_parameters():
@@ -287,12 +322,15 @@ def main():
         from peft import get_peft_model, LoraConfig, TaskType
         
         peft_config = LoraConfig(
-            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1
+            task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1,
+            target_modules=args.target_modules
         )
         model = get_peft_model(model, peft_config)
         for name, param in model.named_parameters():
             if name.find("lora") != -1:
                 param.requires_grad = True
+
+        model.print_trainable_parameters()
     
     train_task_list = {}
     eval_task_list = {}

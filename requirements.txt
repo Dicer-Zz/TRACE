@@ -33,3 +33,6 @@ rouge
 qpth
 sacrebleu
 sacremoses
+accelerate
+bitsandbytes
+evaluate
