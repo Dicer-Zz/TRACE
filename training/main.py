@@ -65,8 +65,7 @@ def parse_args():
     def list_of_strings(arg):
         return arg.split(',')
     parser = argparse.ArgumentParser(
-        description=
-        "Finetune a transformers model on a causal language modeling task")
+        description="Finetune a transformers model on a causal language modeling task")
     parser.add_argument('--data_path',
                         type=str,
                         default='Dahoas/rm-static',
@@ -79,14 +78,12 @@ def parse_args():
         '--data_output_path',
         type=str,
         default='/tmp/data_files/',
-        help=
-        'Where to store the data-related files such as shuffle index. This needs to be on a local storage of a node (not on a shared storage)'
+        help='Where to store the data-related files such as shuffle index. This needs to be on a local storage of a node (not on a shared storage)'
     )
     parser.add_argument(
         "--model_name_or_path",
         type=str,
-        help=
-        "Path to pretrained model or model identifier from huggingface.co/models.",
+        help="Path to pretrained model or model identifier from huggingface.co/models.",
         required=True,
     )
     parser.add_argument(
@@ -118,8 +115,7 @@ def parse_args():
         "--learning_rate",
         type=float,
         default=1e-5,
-        help=
-        "Initial learning rate (after the potential warmup period) to use.",
+        help="Initial learning rate (after the potential warmup period) to use.",
     )
     parser.add_argument("--weight_decay",
                         type=float,
@@ -133,8 +129,7 @@ def parse_args():
         "--gradient_accumulation_steps",
         type=int,
         default=1,
-        help=
-        "Number of updates steps to accumulate before performing a backward/update pass.",
+        help="Number of updates steps to accumulate before performing a backward/update pass.",
     )
     parser.add_argument(
         "--lr_scheduler_type",
@@ -188,29 +183,28 @@ def parse_args():
         default=0,
         help='ZeRO optimization stage for Actor model (and clones).')
 
-    ## lora settings
+    # lora settings
     parser.add_argument('--target_modules',
                         type=list_of_strings,
                         default=None,
                         help='Target modules for LoRA conversion.')
-    ## Tensorboard logging
+    # Tensorboard logging
     parser.add_argument('--enable_tensorboard',
                         action='store_true',
                         help='Enable tensorboard logging')
     parser.add_argument('--tensorboard_path',
                         type=str,
                         default="step1_tensorboard")
-    ## Print loss
+    # Print loss
     parser.add_argument('--print_loss',
                         action='store_true',
                         help='Prints loss at each step.')
     # added by wangxiao
     parser.add_argument('--CL_method',
-                default=None,
-                help='continual learning method used')
+                        default=None,
+                        help='continual learning method used')
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
-
 
     return args
 
@@ -239,7 +233,7 @@ def main():
         'train_micro_batch_size_per_gpu'] = args.per_device_train_batch_size
     ds_config[
         'train_batch_size'] = args.per_device_train_batch_size * torch.distributed.get_world_size(
-        ) * args.gradient_accumulation_steps
+    ) * args.gradient_accumulation_steps
 
     # If passed along, set the training seed now.
     set_random_seed(args.seed)
@@ -265,7 +259,7 @@ def main():
                             torch_dtype=precision,
                             load_in_8bit=args.load_in_8bit
                             )
-    
+
     # some CL methods can be realized by peft
     if args.CL_method == "LFPT5":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
@@ -296,6 +290,16 @@ def main():
 
         print_rank_0(model)
 
+    if args.CL_method == "EPI":
+        from utils.peft import get_peft_model, LoraConfig, LoraModel
+
+        peft_config = LoraConfig(
+            r=8, lora_alpha=32, target_modules=args.target_modules)
+
+        model = LoraModel(model, peft_config, adapter_name="task_0")
+
+        print_rank_0(model)
+
     if args.CL_method == "O-LoRAplus":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
 
@@ -308,10 +312,10 @@ def main():
                 param.requires_grad = True
             elif name.find("lora_") != -1:
                 param.requires_grad = False
-                
+
     if args.CL_method == "OGD":
         from peft import get_peft_model, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1, target_modules=args.target_modules
         )
@@ -322,7 +326,7 @@ def main():
 
     if args.CL_method == "lora":
         from peft import get_peft_model, LoraConfig, TaskType
-        
+
         peft_config = LoraConfig(
             task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1,
             target_modules=args.target_modules
@@ -333,18 +337,17 @@ def main():
                 param.requires_grad = True
 
         model.print_trainable_parameters()
-    
+
     train_task_list = {}
     eval_task_list = {}
     test_task_list = {}
-
 
     if args.dataset_name[0] == "all":
         Datasets = AllDatasetName
     else:
         Datasets = args.dataset_name
     for dataset in Datasets:
-        dataset_path = os.path.join(args.data_path,dataset)
+        dataset_path = os.path.join(args.data_path, dataset)
         # Prepare the data
         train_dataset, eval_dataset, test_dataset = create_prompt_dataset(
             args.local_rank,
@@ -382,23 +385,25 @@ def main():
             inference=True
         )
                 
+                
+
+
 
         train_dataloader = DataLoader(train_dataset,
-                                    collate_fn=data_collator,
-                                    sampler=train_sampler,
-                                    batch_size=args.per_device_train_batch_size)
+                                      collate_fn=data_collator,
+                                      sampler=train_sampler,
+                                      batch_size=args.per_device_train_batch_size)
         eval_dataloader = DataLoader(eval_dataset,
-                                    collate_fn=data_collator,
-                                    sampler=eval_sampler,
-                                    batch_size=args.per_device_eval_batch_size)
+                                     collate_fn=data_collator,
+                                     sampler=eval_sampler,
+                                     batch_size=args.per_device_eval_batch_size)
         test_dataloader = DataLoader(test_dataset,
-                            collate_fn=inf_data_collator,
-                            sampler=test_sampler,
-                            batch_size=args.per_device_eval_batch_size)
+                                     collate_fn=inf_data_collator,
+                                     sampler=test_sampler,
+                                     batch_size=args.per_device_eval_batch_size)
         train_task_list[dataset] = train_dataloader
         eval_task_list[dataset] = eval_dataloader
         test_task_list[dataset] = test_dataloader
-
 
     def evaluation(model, eval_dataloader):
         model.eval()
@@ -431,49 +436,50 @@ def main():
 
         AdamOptimizer = DeepSpeedCPUAdam if args.offload else FusedAdam
         optimizer = AdamOptimizer(optimizer_grouped_parameters,
-                                lr=args.learning_rate,
-                                betas=(0.9, 0.95))
-        
-        total_train_dataloader_len = sum(len(train_task_list[task]) for task in list(train_task_list.keys()))
+                                  lr=args.learning_rate,
+                                  betas=(0.9, 0.95))
+
+        total_train_dataloader_len = sum(
+            len(train_task_list[task]) for task in list(train_task_list.keys()))
         num_update_steps_per_epoch = math.ceil(
             total_train_dataloader_len / args.gradient_accumulation_steps)
         lr_scheduler = get_constant_schedule_with_warmup(
             optimizer=optimizer,
             num_warmup_steps=args.num_warmup_steps
         )
-        
+
         return optimizer, lr_scheduler
-    
-    if args.CL_method=="PP" or args.CL_method=="L2P":
+
+    if args.CL_method == "PP" or args.CL_method == "L2P":
         if "opt" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.decoder.embed_tokens.weight.shape
             embed_tokens = model.model.decoder.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
         elif "llama" in args.model_name_or_path.lower():
             embed_tokens_shape = model.model.embed_tokens.weight.shape
             embed_tokens = model.model.embed_tokens
-            
+
             args.embed_tokens_dim = embed_tokens_shape[1]
             args.embed_tokens_length = embed_tokens_shape[0]
             args.embed_tokens = embed_tokens
-            
-        if args.CL_method=="PP":
+
+        if args.CL_method == "PP":
             args.prefix_len = 20
             args.task_length = len(train_task_list)
             model = convert_PP_model(model, args)
-            
-        elif args.CL_method=="L2P":
+
+        elif args.CL_method == "L2P":
             args.pool_size = 10
             args.prompt_length = 5
             args.prompt_init = "uniform"
             model = convert_L2P_model(model, args)
             for name, params in model.named_parameters():
                 if "prompt" not in name:
-                    params.requires_grad=False
-                    
+                    params.requires_grad = False
+
     optimizer, lr_scheduler = get_optimizer(model)
     model, optimizer, _, lr_scheduler = deepspeed.initialize(
         model=model,
@@ -497,7 +503,8 @@ def main():
     # Initialize the global progress bar
 
     if args.CL_method in Method2Class.keys():
-        CL_Trainer = Method2Class[args.CL_method](model, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args)
+        CL_Trainer = Method2Class[args.CL_method](
+            model, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args)
         CL_Trainer.train_continual()
 
 

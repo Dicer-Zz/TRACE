@@ -375,8 +375,8 @@ def main():
                             args.model_name_or_path,
                             tokenizer,
                             ds_config=None,
+                            torch_dtype=torch.bfloat16,
                             )
-    model = model.bfloat16()
 
     # replace_with_kernel_inject = False if "falcon" in args.model_name_or_path.lower() else True
     replace_with_kernel_inject = False
@@ -433,16 +433,13 @@ def main():
         # for step, batch in enumerate(test_loader):
         #     batch_prompt = batch["prompt"]
         #     answer = batch["answer"]
-
         #     #demonstrations
         #     demonstrations_id = [random.randint(0,len(test_dataset)-1) for i in range(demonstrations_num)]
         #     demonstrations=test_dataset[demonstrations_id]  #[{prompt*4},{answer*4}]
         #     demonstrations["prompt"] = [prompt[len(TASK_PROMT[task]):] for prompt in demonstrations["prompt"]]
         #     batch_prompt = collate_function(batch_prompt, demonstrations, task)
-
         #     if task=="FOMC" or task=="C-STANCE":
         #         output = [output[i][len(batch_prompt[i]):].split("\n")[0] for i in range(len(output))]
-
         #         ground_truths += answer
         #         predicted_sequences += output
         #         sources_sequences += batch_prompt
@@ -450,11 +447,7 @@ def main():
         #         progress_bar.update(1)
         #         description = f"Step {step}"
         #         progress_bar.set_description(description, refresh=False)
-            
-            
-        
 
-        
         if task == "ScienceQA":
             evaluation_result = eval_ScienceQA.eval(
                 predicted_sequences, ground_truths)
