@@ -187,7 +187,7 @@ def parse_args():
     parser.add_argument('--target_modules',
                         type=list_of_strings,
                         default=None,
-                        help='Target modules for LoRA conversion.')
+                        help='Target modules for LoRA adapter.')
     # Tensorboard logging
     parser.add_argument('--enable_tensorboard',
                         action='store_true',
@@ -291,14 +291,15 @@ def main():
         print_rank_0(model)
 
     if args.CL_method == "EPI":
-        from utils.peft import get_peft_model, LoraConfig, LoraModel
+        from utils.peft import LoraConfig, LoraModel
 
-        peft_config = LoraConfig(
+        lora_config = LoraConfig(
             r=8, lora_alpha=32, target_modules=args.target_modules)
 
-        model = LoraModel(model, peft_config, adapter_name="task_0")
+        model = LoraModel(model, lora_config, adapter_name="task_0")
+        # model = get_peft_model(model, peft_config, adapter_name="task_0")
 
-        print_rank_0(model)
+        print_rank_0(model, args.global_rank)
 
     if args.CL_method == "O-LoRAplus":
         from utils.my_peft import get_peft_model, PromptTuningInit, PromptTuningConfig, LoraConfig, TaskType
@@ -384,10 +385,6 @@ def main():
             pad_to_multiple_of=8,
             inference=True
         )
-                
-                
-
-
 
         train_dataloader = DataLoader(train_dataset,
                                       collate_fn=data_collator,

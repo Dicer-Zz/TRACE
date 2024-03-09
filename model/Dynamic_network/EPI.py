@@ -1,28 +1,35 @@
 import os
 import tqdm
 import torch
-from peft import LoraModel
 from model.base_model import CL_Base_Model
 from utils.utils import print_rank_0, to_device
 
 
 class EPI(CL_Base_Model):
 
-    def __init__(self, model: LoraModel, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args):
+    def __init__(self, model, tokenizer, optimizer, train_task_list, eval_task_list, test_task_list, args, is_ds_engine=True):
         super(EPI, self).__init__(model, tokenizer, optimizer,
                                   train_task_list, eval_task_list, test_task_list, args)
-        hidden_size = model.model.config.hidden_size
-        self.means = torch.nn.ParameterList()
-        self.covs = torch.nn.ParameterList()
-        self.cov_inv = torch.nn.Parameter(torch.zeros(
-            hidden_size, hidden_size), requires_grad=False)
+        # print all attributes of the model (deepspeed engine actually)
+        # print_rank_0(f"Deepspeed attributes: {model.__dict__}", self.args.global_rank)
 
-        self.device = torch.device(
-            "cuda") if self.args.local_rank == -1 else torch.device("cuda", self.args.local_rank)
+        if is_ds_engine:
+            hidden_size = model.module.config.hidden_size
+        else:
+            hidden_size = model.config.hidden_size
+
+        self.means = []
+        self.covs = []
+        self.cov_inv = torch.zeros(hidden_size, hidden_size)
+        if train_task_list is not None:
+            self.task_count = len(train_task_list)
+
+        self.device = torch.device("cuda") if self.args.local_rank == -1 else torch.device("cuda", self.args.local_rank)
 
     def train_continual(self):
         for task_num, task_name in enumerate(self.train_task_list):
             self.train_one_task(task_name, task_num, int(self.args.num_train_epochs[task_num]))
+            # may only do statistic when local_rank == 0
             self.statistic(task_name, task_num)
             self.save_model(task_num)
             self.expand_lora_adapters(task_num+1)
@@ -30,9 +37,13 @@ class EPI(CL_Base_Model):
     def expand_lora_adapters(self, task_num):
         new_task = f"task_{task_num}"
         self.model.peft_config[new_task] = self.model.peft_config["task_0"]
+        # from dataclasses import replace
+        # self.model.peft_config[new_task] = replace(self.model.peft_config["task_0"])
         self.model.inject_adapter(self.model, f"task_{task_num}")
 
     def train_one_task(self, task_name, task_num, epochs):
+        print_rank_0(f"model architecture: {self.model}", self.args.global_rank)
+
         # training progress
         train_dataloader = self.train_task_list[task_name]
         total_steps = epochs * len(train_dataloader)
@@ -42,7 +53,8 @@ class EPI(CL_Base_Model):
         # we only active the LoRA params for the current task
         self.model.set_adapter(f"task_{task_num}")
         print_rank_0(
-            f"Training on task {task_num} only use LoRA adapter {self.model.active_adapters}")
+            f"Training on task {task_num} only use LoRA adapter {self.model.active_adapters}", self.args.global_rank)
+        print_rank_0(f"{trainable_params(self.model)}", self.args.global_rank)
 
         self.model.train()
         for epoch in range(epochs):
@@ -82,6 +94,7 @@ class EPI(CL_Base_Model):
 
         # step 1: we first get all pre-logits from the model
 
+        self.model.eval()
         # disable all the adapters
         self.model.set_adapter([])
         outputs = self.model(input_ids=input_ids,
@@ -96,7 +109,7 @@ class EPI(CL_Base_Model):
 
         score_over_tasks = []
         for task_num, task_mean in enumerate(self.means):
-            score = mahalanobis(prelogits, self.means, self.cov_inv)
+            score = mahalanobis(prelogits, task_mean, self.cov_inv)
             score_over_tasks.append(score)
 
         # [batch_size, num_tasks]
@@ -120,20 +133,31 @@ class EPI(CL_Base_Model):
         return adopt_answer
 
     def statistic(self, task, task_num):
+        if self.args.global_rank > 0:
+            return
+
         # statistic on a single task for mean and covariance
 
         # disable all the adapters
-        self.model.set_adapter([])
-        print_rank_0(f"Statistic on task {task_num} (not using any adapter)")
+        # self.model.disable_adapter_layers()
+        print_rank_0(f"Statistic on task {task_num} (not using any adapter)", self.args.global_rank)
+        print_rank_0(f"Current active adapters: {self.model.active_adapters}", self.args.global_rank)
 
         self.model.eval()
 
+        train_dataloader = self.train_task_list[task]
+        total_steps = len(train_dataloader)
+        progress_bar = tqdm.tqdm(total=total_steps, leave=True,
+                            disable=(self.args.global_rank != 0))
         with torch.no_grad():
             prelogits = []
-            for step, batch in enumerate(self.eval_task_list[task]):
+            for step, batch in enumerate(train_dataloader):
                 del batch['sources']
                 batch = to_device(batch, self.device)
-                outputs = self.model(**batch,
+                # get pre-logits from the base model
+                # in this way, we don't need to disable any adapter.
+                # this way can be adpot to deepspeed
+                outputs = self.model.module.model(**batch,
                                      output_hidden_states=True,
                                      output_attentions=False,
                                      use_cache=False)
@@ -144,16 +168,22 @@ class EPI(CL_Base_Model):
                 pooling = mean_pooling(last_hidden_state, attention_mask)
                 prelogits.extend(pooling.tolist())
 
+                progress_bar.update(1)
+                description = f"Task {task_num} Step {step+1}/{total_steps}"
+                progress_bar.set_description(description, refresh=False)
+
         prelogits = torch.tensor(prelogits)
 
+        # [hidden_size]
         task_mean = prelogits.mean(dim=0)
+        # [hidden_size, hidden_size]
         task_cov = torch.cov((prelogits - task_mean).T)
 
         self.means.append(task_mean)
         self.covs.append(task_cov)
 
         # update the inverse of the covariance matrix
-        task_cov_mean = task_cov.mean()
+        task_cov_mean = torch.stack(list(self.covs), dim=0).mean(dim=0)
         # self.cov_inv = torch.linalg.inv(task_cov_mean)
         self.cov_inv = torch.linalg.pinv(task_cov_mean, hermitian=True)
 
@@ -165,10 +195,52 @@ class EPI(CL_Base_Model):
             peft_model_id = os.path.join(self.args.output_dir, str(task_num))
             if not os.path.exists(peft_model_id):
                 os.makedirs(peft_model_id)
-            self.model.save_pretrained(peft_model_id)
+
+            self.model.module.save_pretrained(peft_model_id) # will save the whole model instead of the adapter only
+
+            # save the task_count, mean, covariance and inverse covariance matrix also
+            mean_cov_path = os.path.join(peft_model_id, "mean_cov.pt")
+            torch.save({"task_count": task_num,
+                        "means": self.means,
+                        "covs": self.covs,
+                        "cov_inv": self.cov_inv}, mean_cov_path)
             self.tokenizer.save_pretrained(peft_model_id)
             print_rank_0(
                 f'Sucessfully saving the final model to {peft_model_id}', self.args.global_rank)
+
+    @staticmethod
+    def load_model(model, model_path, args):
+        # model: LoraModel
+        # model_path: string
+
+        print_rank_0(f"Loading the model from {model_path}")
+
+        # we only need the model in the EPI
+        epi = EPI(model, None, None, None, None, None, args, is_ds_engine=False)
+
+        # step 1: load task_count, mean, cov and cov_inv
+        mean_cov_path = os.path.join(model_path, "mean_cov.pt")
+        mean_cov = torch.load(mean_cov_path)
+        epi.means = mean_cov["means"]
+        epi.covs = mean_cov["covs"]
+        epi.cov_inv = mean_cov["cov_inv"]
+        epi.task_count = mean_cov["task_count"]
+
+        # step 2: restore LoRA adapters
+        
+        # model: LoRA model only have one adapter
+        # step 2.1: expand the adapter for match model shape to checkpoint
+        for task_num in range(1, epi.task_count):
+            new_task = f"task_{task_num}"
+            epi.model.peft_config[new_task] = epi.model.peft_config["task_0"]
+            epi.model.inject_adapter(epi.model, f"task_{task_num}")
+
+        # step 2.2: copy the adapter weights
+        model = model.from_pretrained(model_path)
+        # model: LoRA model have all the adapters now
+
+        print_rank_0(f"Successfully load the model from {model_path}")
+        return epi
 
 
 def mean_pooling(hidden_states, attention_mask):
@@ -196,3 +268,8 @@ def mahalanobis(querys, mean, cov_inv, norm=2):
         return maha_dis.abs().sqrt().sum(dim=1)
     if norm == 'inf':
         return maha_dis.max(dim=1)
+
+def trainable_params(model):
+    all_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    return f"Total params: {all_params}, Trainable params: {trainable_params}"

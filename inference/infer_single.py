@@ -51,6 +51,7 @@ from training.params import Method2Class, AllDatasetName
 from model.Replay.LFPT5 import getInitialPrompt
 from model.Dynamic_network.PP import PP, convert_PP_model
 from model.Dynamic_network.L2P import convert_L2P_model
+from model.Dynamic_network.EPI import EPI
 
 # dist.init_process_group(backend='nccl')
 
@@ -119,6 +120,11 @@ def parse_args():
         default='all',
         help='Datasets to be used.'
     )
+    # lora settings
+    parser.add_argument('--target_modules',
+                        type=list_of_strings,
+                        default=None,
+                        help='Target modules for LoRA adapter.')
     parser.add_argument("--output_dir",
                         type=str,
                         default=None,
@@ -230,7 +236,7 @@ def main():
                                 tokenizer,
                                 ds_config=None,
                                 )
-        
+
         # TODO: add adapters
         if args.CL_method == "LFPT5":
             from peft import PeftModel
@@ -284,13 +290,28 @@ def main():
             from peft import PeftModel
             model = PeftModel.from_pretrained(model, inference_model_path)
 
-        if args.CL_method != "lora" and args.CL_method != "O-LoRA" and args.CL_method != "LFPT5": 
+        if args.CL_method == "EPI":
+            from utils.peft import LoraModel, LoraConfig
+
+            lora_config = LoraConfig(
+                r=8, lora_alpha=32,
+                target_modules=args.target_modules)
+
+            # prepare the model for EPI
+            model = LoraModel(model, lora_config, adapter_name="task_0")
+            model = EPI.load_model(model, inference_model_path, args)
+
+        # if args.CL_method != "lora" and args.CL_method != "O-LoRA" and args.CL_method != "LFPT5": 
+        if args.CL_method not in ["lora", "O-LoRA", "LFPT5", "EPI"]:
             inference_model = torch.load(os.path.join(inference_model_path, "pytorch_model.bin"))
             for name, param in model.named_parameters():
                 param.data.copy_(inference_model[name])
             del inference_model
 
-        model.to(device)
+        if args.CL_method != "EPI":
+            model.to(device)
+        else:
+            model.model.to(device)
 
         for inference_task_id in range(round+1):    # evaluation for previous tasks in a single round
             inference_task = inference_tasks[inference_task_id]
@@ -323,7 +344,7 @@ def main():
             # Inference !
             print_rank_0("***** Start inference *****", args.local_rank)
             sources_sequences, predicted_sequences, ground_truths = prediction(model, infer_dataloader)
-            
+
             # Get Accuracy/ROUGE/BLEU/...
             # The evaluation result is stored in a dictionary. e.g. {"accuracy": .., "rouge-L": ..}
             if inference_task == "ScienceQA":
