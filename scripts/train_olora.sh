@@ -1,11 +1,10 @@
-#!/bin/bash
-
+#!bin/bash
 port=$(shuf -i25000-30000 -n1)
-method=EPI
-# model=Qwen/Qwen1.5-1.8B-Chat
-# model=Qwen/Qwen1.5-0.5B-Chat
+
+method=O-LoRA
 # model=google/gemma-2b-it
-model="google/gemma-2b"
+# model=Qwen/Qwen1.5-1.8B-Chat
+model=Qwen/Qwen1.5-0.5B-Chat
 # model=TinyLlama/TinyLlama-1.1B-Chat-v1.0
 
 deepspeed --include=localhost:0,1,2,3 --master_port $port training/main.py \
@@ -17,8 +16,8 @@ deepspeed --include=localhost:0,1,2,3 --master_port $port training/main.py \
    --max_prompt_len 1024 \
    --max_ans_len 512 \
    --learning_rate 1e-4 \
-   --weight_decay 0.0 \
-   --num_train_epochs 5,5,5,5,5,5,7 \
+   --weight_decay 0. \
+   --num_train_epochs 5,3,5,3,5,5,7 \
    --gradient_accumulation_steps 8 \
    --lr_scheduler_type cosine \
    --num_warmup_steps 0 \
@@ -28,5 +27,5 @@ deepspeed --include=localhost:0,1,2,3 --master_port $port training/main.py \
    --half \
    --target_modules "q_proj,v_proj" \
    --print_loss \
-   --CL_method $method \
+   --CL_method O-LoRA \
    --output_dir /home/zcwang/TRACE/outputs/cl/$method/$model > /home/zcwang/TRACE/outputs/cl/$method/$model/train.log 2>&1 &

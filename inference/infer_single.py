@@ -291,14 +291,28 @@ def main():
             model = PeftModel.from_pretrained(model, inference_model_path)
 
         if args.CL_method == "EPI":
-            from utils.peft import LoraModel, LoraConfig
+            from utils.our_peft import LoraModel, LoraConfig
 
             lora_config = LoraConfig(
                 r=8, lora_alpha=32,
                 target_modules=args.target_modules)
 
             # prepare the model for EPI
-            model = LoraModel(model, lora_config, adapter_name="task_0")
+            model = LoraModel(model, lora_config, adapter_name="task_neo")
+
+            # ! we have to expand our model before the deepspeed initialization
+            # ! because in the training of deepspeed, the model not allow to change the model structure
+            task_count = len(args.inference_tasks)
+            for task_num in range(0, task_count):
+                new_task = f"task_{task_num}"
+                model.peft_config[new_task] = lora_config
+                model.inject_adapter(model, new_task)
+
+            model_state_dict = torch.load(os.path.join(inference_model_path, "pytorch_model.bin"))
+            for name, param in model.named_parameters():
+                assert name in model_state_dict
+                param.data.copy_(model_state_dict[name])
+
             model = EPI.load_model(model, inference_model_path, args)
 
         # if args.CL_method != "lora" and args.CL_method != "O-LoRA" and args.CL_method != "LFPT5": 

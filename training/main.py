@@ -291,12 +291,21 @@ def main():
         print_rank_0(model)
 
     if args.CL_method == "EPI":
-        from utils.peft import LoraConfig, LoraModel
+        from utils.our_peft import LoraConfig, LoraModel
 
         lora_config = LoraConfig(
             r=8, lora_alpha=32, target_modules=args.target_modules)
 
-        model = LoraModel(model, lora_config, adapter_name="task_0")
+        model = LoraModel(model, lora_config, adapter_name="task_neo")
+
+        # ! we have to expand our model before the deepspeed initialization
+        # ! because in the training of deepspeed, the model not allow to change the model structure
+        task_count = len(args.dataset_name)
+        for task_num in range(0, task_count):
+            new_task = f"task_{task_num}"
+            model.peft_config[new_task] = lora_config
+            model.inject_adapter(model, new_task)
+
         # model = get_peft_model(model, peft_config, adapter_name="task_0")
 
         print_rank_0(model, args.global_rank)
