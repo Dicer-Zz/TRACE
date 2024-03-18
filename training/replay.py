@@ -117,7 +117,11 @@ def parse_args():
         default=512,
         help="The maximum sequence length.",
     )
-
+    # lora settings
+    parser.add_argument('--target_modules',
+                        type=list_of_strings,
+                        default=None,
+                        help='Target modules for LoRA adapter.')
     parser.add_argument(
         "--learning_rate",
         type=float,
@@ -250,19 +254,32 @@ def main():
                             ds_config=ds_config,
                             disable_dropout=args.disable_dropout
                             )
-    
-    
+
+    from peft import get_peft_model, LoraConfig, TaskType
+
+    peft_config = LoraConfig(
+        task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1,
+        target_modules=args.target_modules
+    )
+
+    model = get_peft_model(model, peft_config)
+    for name, param in model.named_parameters():
+        if name.find("lora") != -1:
+            param.requires_grad = True
+
+    model.print_trainable_parameters()
+
     train_task_list = {}
     eval_task_list = {}
     test_task_list = {}
-    
+
     replay_dataset_list={}
 
     def get_dataset(dataset):
         dataset_path = os.path.join(args.data_path,dataset)
         # Prepare the data
         if dataset==args.replay_dataset_name:
-            sample_ratio=None
+            sample_ratio=0.001
         else:
             sample_ratio=eval(args.past_task_ratio)
         replay_dataset, _, _ = create_prompt_dataset(
@@ -410,6 +427,8 @@ def main():
                 model.backward(loss)
                 # Correct gradient accumulation steps are handled withing the deepspeed engine's backward call.
                 model.step()
+                # break    # for debug
+
     def replay(i_task, epochs):
         replay_datasets = [replay_dataset_list[Datasets[i]] for i in range(i_task)]
         replay_datasets.append(replay_dataset_list[args.replay_dataset_name])
@@ -468,12 +487,12 @@ def main():
         if args.global_rank == 0:
             save_hf_format(model, tokenizer, args, sub_folder=str(round))
 
-        if args.zero_stage == 3:
-            # For zero stage 3, each gpu only has a part of the model, so we need a special save function
-            save_zero_three_model(model,
-                                  args.global_rank,
-                                  args.output_dir,
-                                  zero_stage=args.zero_stage)
+        # if args.zero_stage == 3:
+        #     # For zero stage 3, each gpu only has a part of the model, so we need a special save function
+        #     save_zero_three_model(model,
+        #                           args.global_rank,
+        #                           args.output_dir,
+        #                           zero_stage=args.zero_stage)
         print_rank_0('Sucessful saving model after round {}'.format(round), args.global_rank)
 
 

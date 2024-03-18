@@ -38,6 +38,9 @@ from evaluations import eval_ScienceQA, eval_MeetingBank, eval_PapyrusF, eval_CS
 from inference.HHH.data_process import HHH
 from datasets import load_dataset
 
+# from training.params import Method2Class, AllDatasetName
+from model.Dynamic_network.EPI import EPI
+
 # # add flash attention
 # from utils.flash_attention.llama_flash_att import replace_llama_attn_with_flash_attn
 # from utils.flash_attention.bloom_flash_att import replace_bloom_attn_with_flash_attn
@@ -110,7 +113,11 @@ def parse_args():
         default=None,
         help="Which task to be infered"
     )
-
+    # lora settings
+    parser.add_argument('--target_modules',
+                        type=list_of_strings,
+                        default=None,
+                        help='Target modules for LoRA adapter.')
     parser.add_argument("--output_dir",
                         type=str,
                         default=None,
@@ -132,7 +139,15 @@ def parse_args():
                         type=str,
                         default=None,
                         help="Where to store inference results.")
-
+    parser.add_argument('--CL_method',
+            default=None,
+            help='continual learning method used')
+    parser.add_argument(
+        "--inference_model_path",
+        type=str,
+        help=
+        "Path to inference model.",
+    )
     parser = deepspeed.add_config_arguments(parser)
     args = parser.parse_args()
 
@@ -177,6 +192,35 @@ def main():
                             )
     # model = model.bfloat16()
 
+    if args.CL_method == "EPI":
+        from utils.our_peft import LoraModel, LoraConfig
+
+        lora_config = LoraConfig(
+            r=8, lora_alpha=32,
+            target_modules=args.target_modules)
+
+        # prepare the model for EPI
+        model = LoraModel(model, lora_config, adapter_name="task_neo")
+
+        # ! we have to expand our model before the deepspeed initialization
+        # ! because in the training of deepspeed, the model not allow to change the model structure
+        task_count = 7
+        for task_num in range(0, task_count):
+            new_task = f"task_{task_num}"
+            model.peft_config[new_task] = lora_config
+            model.inject_adapter(model, new_task)
+
+        model_state_dict = torch.load(os.path.join(args.inference_model_path, "pytorch_model.bin"))
+        for name, param in model.named_parameters():
+            assert name in model_state_dict
+            param.data.copy_(model_state_dict[name])
+
+        model = EPI.load_model(model, args.inference_model_path, args)
+
+        model.model.to(device)
+    else:
+        model.to(device)
+
     # reference
     # https://github.com/microsoft/DeepSpeed/blob/master/docs/_tutorials/inference-tutorial.md
     # https://huggingface.co/docs/transformers/main_classes/pipelines
@@ -185,11 +229,12 @@ def main():
     # https://www.microsoft.com/en-us/research/blog/deepspeed-accelerating-large-scale-model-inference-and-training-via-system-optimizations-and-compression/
     # https://www.deepspeed.ai/tutorials/inference-tutorial/
 
-    replace_with_kernel_inject = False if "falcon" in args.model_name_or_path.lower() else True
-    ds_engine = deepspeed.init_inference(model, mp_size=world_size, dtype=torch.bfloat16, checkpoint=None,
-                                         replace_with_kernel_inject=replace_with_kernel_inject,
-                                         max_out_tokens=args.max_prompt_len + args.max_ans_len)
-    model = ds_engine.module
+    # replace_with_kernel_inject = False if "falcon" in args.model_name_or_path.lower() else True
+    # replace_with_kernel_inject = False
+    # ds_engine = deepspeed.init_inference(model, mp_size=world_size, dtype=torch.bfloat16, checkpoint=None,
+    #                                      replace_with_kernel_inject=replace_with_kernel_inject,
+    #                                      max_out_tokens=args.max_prompt_len + args.max_ans_len)
+    # model = ds_engine.module
 
     from transformers import GenerationConfig
     generation_config = GenerationConfig(
@@ -225,7 +270,7 @@ def main():
                                             max_new_tokens=args.max_ans_len,
                                             bos_token_id=tokenizer.bos_token_id,
                                             eos_token_id=tokenizer.eos_token_id,
-                                            pad_token_id=tokenizer.unk_token_id,
+                                            pad_token_id=tokenizer.eos_token_id,
                                             generation_config=generation_config,
                                             use_cache=True
                                             )
@@ -246,9 +291,13 @@ def main():
         output_file = os.path.join(output_dir,task+'.json')
         with open(output_file, "w", encoding='utf-8') as file:
             json.dump(df, file, ensure_ascii=False)
-    
-    task_dict = {"helpful":['Koala', 'Alpaca', 'OpenAssistant', 'self-instruct', 'LIMA'],
-                 "harmless":['CoNa', 'Malicious', 'Controversial', 'PhysicalSafetyUnsafe']}
+
+    # task_dict = {"helpful":['Koala', 'Alpaca', 'OpenAssistant', 'self-instruct', 'LIMA'],
+    #              "harmless":['CoNa', 'Malicious', 'Controversial', 'PhysicalSafetyUnsafe']}
+
+    # for faster testing
+    task_dict = {"helpful":['self-instruct', 'LIMA'],
+                 "harmless":['CoNa']}
 
     for evaluation_aspect in args.inference_tasks:
     # Prepare the data

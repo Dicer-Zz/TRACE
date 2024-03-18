@@ -287,8 +287,33 @@ def main():
                         params.requires_grad=False
 
         if args.CL_method == "lora":
-            from peft import PeftModel
-            model = PeftModel.from_pretrained(model, inference_model_path)
+            # from peft import PeftModel
+            # model = PeftModel.from_pretrained(model, inference_model_path)
+
+            from peft import get_peft_model, LoraConfig, TaskType
+
+            peft_config = LoraConfig(
+                task_type=TaskType.CAUSAL_LM, r=8, lora_alpha=32, lora_dropout=0.1,
+                target_modules=args.target_modules
+            )
+            model = get_peft_model(model, peft_config)
+            for name, param in model.named_parameters():
+                if name.find("lora") != -1:
+                    param.requires_grad = True
+
+            model_state_dict = torch.load(os.path.join(inference_model_path, "pytorch_model.bin"))
+            print_rank_0(model, args.local_rank)
+            print_rank_0(model_state_dict.keys(), args.local_rank)
+
+            for name, param in model.named_parameters():
+                assert name in model_state_dict
+                try:
+                    param.data.copy_(model_state_dict[name])
+                except:
+                    print_rank_0(f"Error in copying {name}", args.local_rank)
+                    print_rank_0(f"Shape of model: {param.shape}, shape of model_state_dict: {model_state_dict[name].shape}", args.local_rank)
+
+            model.print_trainable_parameters()
 
         if args.CL_method == "EPI":
             from utils.our_peft import LoraModel, LoraConfig
