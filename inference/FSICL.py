@@ -44,11 +44,34 @@ from evaluations import (
 
 # os.environ['CUDA_VISIBLE_DEVICES']="0"
 
-EXAMPLE_PROMPT = "We will give you several examples and you should follow them to accomplish the task.\n Examples:\n"
+EXAMPLE_PROMPT = {
+    "EN": "We will give you several examples and you should follow them to accomplish the task.\n Examples:\n",
+    "ZH": "我们将给出一些例子，您需要按照这些例子来完成任务。\n 例子：\n",
+    "DE": "Wir geben Ihnen einige Beispiele und Sie sollten ihnen folgen, um die Aufgabe zu erledigen.\n Beispiele:\n",
+}
 
-COT_PROMPT = "\nLet's think step by step:\n"
+COT_PROMPT = {
+    "EN": "\nLet's think step by step:\n",
+    "ZH": "\n让我们一步一步地思考：\n",
+    "DE": "\nLassen Sie uns Schritt für Schritt denken:\n",
+}
 
-COT_ANSWER = "\nGiven the above question and reasoning, the answer is:\n"
+COT_ANSWER = {
+    "EN": "\nGiven the above question and reasoning, the answer is:\n",
+    "ZH": "\n根据上述问题和推理，答案是：\n",
+    "DE": "\nAngesichts der obigen Frage und Überlegung ist die Antwort:\n",
+}
+
+TASK_LANG = {
+    "FOMC": "EN",
+    "C-STANCE": "ZH",
+    "ScienceQA": "EN",
+    "NumGLUE-cm": "EN",
+    "NumGLUE-ds": "EN",
+    "MeetingBank": "EN",
+    "Py150": "EN",
+    "20Minuten": "DE",
+}
 
 TASK_INSTRUCTIONS = {
     "FOMC": "What is the monetary policy stance for the following text? A. dovish, B. hawkish, C. neutral. Choose one from A, B and C.\n",
@@ -61,22 +84,8 @@ TASK_INSTRUCTIONS = {
     "20Minuten": "Provide a simplified version of the following paragraph in German.\n",
 }
 
+SELF_CONSISTENCY_TASK = ["ScienceQA", "FOMC", "C-STANCE", "NumGLUE-cm", "NumGLUE-ds"]
 
-def collate_function(batch_prompt, demonstrations, task):
-    processed_prompt = []
-    for prompt in batch_prompt:
-
-        task_prompt = TASK_INSTRUCTIONS[task]
-        prompt = prompt[len(task_prompt) :]
-        demonstrations_prompt = ""
-        for i in range(len(demonstrations["prompt"])):
-            demonstrations_prompt += demonstrations["prompt"][i]
-            demonstrations_prompt += demonstrations["answer"][i]
-            demonstrations_prompt += "\n\n"
-
-        prompt = task_prompt + demonstrations_prompt + EXAMPLE_PROMPT + prompt
-        processed_prompt.append(prompt)
-    return processed_prompt
 
 def parse_args():
     def list_of_strings(arg):
@@ -225,10 +234,15 @@ def main():
                 length_limit,
                 task,
             )
+            # py150 has no instruction
+            if task != 'Py150':
+                # remove instruction for other tasks
+                for i in range(len(demos)):
+                    demos[i]["prompt"] = demos[i]["prompt"][len(TASK_INSTRUCTIONS[task]):]
         # print_rank_0("demonstrations length:{}".format(len(demonstrations)), args.global_rank)
         # we sample the demonstrations from the dataset
         # for each batch instead of each sample
-        demos_input_ids = tokenizer(EXAMPLE_PROMPT + ''.join(demo["prompt"] + demo["answer"] + '\n' for demo in demos), return_tensors="pt", padding=True).input_ids
+        demos_input_ids = tokenizer(TASK_INSTRUCTIONS[task] + EXAMPLE_PROMPT[TASK_LANG[task]] + ''.join(demo["prompt"] + ' ' + demo["answer"] + '\n\n' for demo in demos), return_tensors="pt", padding=True).input_ids
         demos_attention_mask = torch.ones_like(demos_input_ids)
         demos_input_ids = demos_input_ids.to(device)
         demos_attention_mask = demos_attention_mask.to(device)
@@ -252,6 +266,7 @@ def main():
             del batch["sources"]
             del batch["gts"]
             batch = to_device(batch, device)
+
             # append demonstrations to batch
             if args.shots > 0:
                 batch = append_demos_to_batch(batch, None, task)
@@ -264,28 +279,35 @@ def main():
 
             with torch.no_grad():
                 # sft config
-                if not args.self_consistency:
-                    generation_config = GenerationConfig(
-                        temperature=args.temperature,
-                        do_sample=False,
-                        num_return_sequences=1,
-                        repetition_penalty=args.repetition_penalty,
-                    )
-                else:
+                if args.self_consistency and task in SELF_CONSISTENCY_TASK:
                     generation_config = GenerationConfig(
                         temperature=args.temperature,
                         do_sample=True,
                         num_return_sequences=args.paths,
                         repetition_penalty=args.repetition_penalty,
                     )
+                else:
+                    generation_config = GenerationConfig(
+                        temperature=args.temperature,
+                        do_sample=True,
+                        num_return_sequences=1,
+                        repetition_penalty=args.repetition_penalty,
+                    )
 
-                if args.cot:
-                    cot_prompt_input_ids = tokenizer(COT_PROMPT, return_tensors="pt").input_ids
+                if args.cot and task in SELF_CONSISTENCY_TASK:
+                    cot_prompt_input_ids = tokenizer(COT_PROMPT[TASK_LANG[task]], return_tensors="pt").input_ids
                     cot_prompt_input_ids = cot_prompt_input_ids.to(device)
                     # expand the COT_PROMPT to the batch size
                     cot_prompt_input_ids = cot_prompt_input_ids.repeat(batch["input_ids"].shape[0], 1)
                     batch["input_ids"] = torch.cat([batch["input_ids"], cot_prompt_input_ids], dim=1)
                     batch["attention_mask"] = torch.cat([batch["attention_mask"], torch.ones_like(cot_prompt_input_ids)], dim=1)
+
+                max_seq_len = batch["input_ids"].shape[1]
+                print_rank_0(f"input_ids shape: {batch['input_ids'].shape}", args.global_rank)
+                print_rank_0(f"attention_mask shape: {batch['attention_mask'].shape}", args.global_rank)
+
+                # print_rank_0(f"input_ids: {batch['input_ids']}", args.global_rank)
+                # print_rank_0(f"attention_mask: {batch['attention_mask']}", args.global_rank)
 
                 generate_ids = model.generate(
                     input_ids=batch["input_ids"],
@@ -297,46 +319,50 @@ def main():
                     generation_config=generation_config,
                     use_cache=True,
                 )
-                max_seq_len = batch["input_ids"].shape[1]
 
                 # cot
-                if args.cot:
+                if args.cot and task in SELF_CONSISTENCY_TASK:
                     # append the COT_ANSWER to the end of the prompt
                     # generate_ids: [batch_size * paths, length]
-                    cot_ids = tokenizer(COT_ANSWER, return_tensors="pt").input_ids
+                    cot_ids = tokenizer(COT_ANSWER[TASK_LANG[task]], return_tensors="pt").input_ids
                     cot_ids = cot_ids.to(device)
                     cot_ids = cot_ids.repeat(generate_ids.shape[0], 1)
                     generate_ids = torch.cat([generate_ids, cot_ids], dim=1)
                     max_seq_len = generate_ids.shape[1]
 
+                    print_rank_0(f"generate_ids shape: {generate_ids.shape}", args.global_rank)
+
                     # re-generate
-                    if args.self_consistency:
-                        generation_config.num_return_sequences = 1
+                    if args.self_consistency and task in SELF_CONSISTENCY_TASK:
+                        generation_config2 = GenerationConfig(
+                            temperature=args.temperature,
+                            do_sample=True,
+                            num_return_sequences=1,
+                            repetition_penalty=args.repetition_penalty,
+                        )
+                        print_rank_0(f"generation config: {generation_config2}", args.global_rank)
                         tmp_ids =[]
                         for i in range(args.paths):
                             tmp_ids.append(model.generate(
-                                input_ids=generate_ids,
+                                input_ids=generate_ids[i::args.paths],
                                 # attention_mask=batch["attention_mask"],
                                 max_new_tokens=args.max_ans_len,
                                 bos_token_id=tokenizer.bos_token_id,
                                 eos_token_id=tokenizer.eos_token_id,
                                 pad_token_id=tokenizer.unk_token_id,
-                                generation_config=generation_config,
+                                generation_config=generation_config2,
                                 use_cache=True,
                             ))
+                        print_rank_0(f"tmp_ids shape: {[ids.shape for ids in tmp_ids]}", args.global_rank)
                         # match the length of the generated sequences
                         max_length = max([ids.shape[1] for ids in tmp_ids])
                         for i in range(args.paths):
                             if tmp_ids[i].shape[1] < max_length:
-                                # left padding
                                 pad_len = max_length - tmp_ids[i].shape[1]
                                 pad_ids = torch.full((tmp_ids[i].shape[0], pad_len), tokenizer.pad_token_id, dtype=torch.long, device=device)
-                                tmp_ids[i] = torch.cat([pad_ids, tmp_ids[i]], dim=1)
+                                tmp_ids[i] = torch.cat([tmp_ids[i], pad_ids], dim=1)
 
-                        # [paths, batch_size, length]
                         generate_ids = torch.cat(tmp_ids, dim=0)
-                        # reshape to [paths * batch_size, length]
-                        generate_ids = generate_ids.reshape(-1, generate_ids.shape[-1])
                     else:
                         generate_ids = model.generate(
                             input_ids=generate_ids,
@@ -350,6 +376,7 @@ def main():
                         )
 
                     print_rank_0(f"generate_ids shape: {generate_ids.shape}", args.global_rank)
+                    # print_rank_0(f"generate_ids: {generate_ids}", args.global_rank)
 
             if args.global_rank <= 0:
                 # same special decoding trick
@@ -372,17 +399,7 @@ def main():
                     skip_special_tokens=True,
                     clean_up_tokenization_spaces=False,
                 )
-
-                if args.self_consistency:
-                    # pre_sequences: [paths * batch_size, length]
-                    # reshape to [paths, batch_size, length]
-                    pre_sequences = torch.tensor(pre_sequences, dtype=torch.long, device=device)
-                    pre_sequences = pre_sequences.reshape(args.paths, -1, pre_sequences.shape[1])
-                    # vote for the final result over paths
-                    pre_sequences = pre_sequences.mode(dim=0).values
-                    # reshape to [batch_size, length]
-                    pre_sequences = pre_sequences.reshape(-1, pre_sequences.shape[-1])
-                    pre_sequences = pre_sequences.tolist()
+                # print_rank_0(f"pre_sequnces: {pre_sequences}", args.global_rank)
 
                 # if "NumGLUE" in task:
                 #     for i in range(len(pre_sequences)):
@@ -402,11 +419,26 @@ def main():
                 #     for i in range(len(pre_sequences)):
                 #         pre_sequences[i] = pre_sequences[i].split("Paragraph")[0]
 
+                if args.self_consistency and task in SELF_CONSISTENCY_TASK:
+                    # pre_sequences: [batch_size * paths]
+                    # [1, 2, ..., batch_size, 1, 2, ..., batch_size, ...]
+                    # list of string
+                    # vote for the final result
+                    
+                    # we only need the answer
+                    pre_sequences = [seq.strip()[:1] for seq in pre_sequences]
+
+                    batch_size = len(pre_sequences) // args.paths
+                    pre_sequences = [pre_sequences[i*batch_size:(i+1)*batch_size] for i in range(args.paths)]
+                    pre_sequences = list(map(list, zip(*pre_sequences)))
+                    pre_sequences = [max(set(seq), key=seq.count) for seq in pre_sequences]
+
                 predicted_sequences += pre_sequences
                 sources_sequences += sou_sequences
 
-                if len(predicted_sequences) > 5:
-                    break
+                # # early stop
+                # if step == 5:
+                #     break
 
         return sources_sequences, predicted_sequences, ground_truths
 
@@ -440,9 +472,6 @@ def main():
         Datasets = AllDatasetName
     else:
         Datasets = args.dataset_name
-        Datasets = args.dataset_name
-
-    Datasets = args.dataset_name
 
     tokenizer = load_hf_tokenizer(args.model_name_or_path, fast_tokenizer=True)
     assert tokenizer.padding_side == "left"
@@ -482,11 +511,11 @@ def main():
         )
 
         length_limit = args.max_prompt_len - len(
-            tokenizer(TASK_INSTRUCTIONS[task] + EXAMPLE_PROMPT)["input_ids"]
+            tokenizer(TASK_INSTRUCTIONS[task] + EXAMPLE_PROMPT[TASK_LANG[task]])["input_ids"]
         )
 
-        if args.cot:
-            length_limit -= len(tokenizer(COT_PROMPT + COT_ANSWER)["input_ids"])
+        if args.cot and task in SELF_CONSISTENCY_TASK:
+            length_limit -= len(tokenizer(COT_PROMPT[TASK_LANG[task]] + COT_ANSWER[TASK_LANG[task]])["input_ids"])
 
         # demonstrations = get_random_demonstrations(
         #     int(args.shots),

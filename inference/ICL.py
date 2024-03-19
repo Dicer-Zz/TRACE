@@ -354,13 +354,7 @@ def main():
     if args.dataset_name[0] == "all":
         Datasets = AllDatasetName
     else:
-        Datasets = args.dataset_name    
-        Datasets = args.dataset_name    
-    
-    model_path = args.model_name_or_path
-    Datasets = args.dataset_name
-    
-    model_path = args.model_name_or_path
+        Datasets = args.dataset_name
 
     tokenizer = load_hf_tokenizer(args.model_name_or_path, fast_tokenizer=True)
     assert tokenizer.padding_side == 'left'
